@@ -1,218 +1,227 @@
 # Semantic Search System
+
 ### An end-to-end semantic search engine with fuzzy clustering and intelligent caching
 
-## What this project does
-
-When you search for *"flu symptoms"*, a normal search engine looks for those exact words.
-This system understands that *"influenza fever treatment"* means the same thing and returns the same results — without recomputing anything, because it remembers similar past queries.
-
-That is the core idea: **semantic search + smart caching**.
+> This project reflects my understanding of semantic search — building a search engine that actually understands what you're asking, not just matching keywords.
 
 ---
 
-## Why I built it this way
+## What I built
 
-When I started this project, I had three main problems to solve:
+Here's the problem I started with: 
 
-**Problem 1 — How do I make search understand meaning, not just words?**
+Normal search looks for exact words. If you search for "flu symptoms"`, it'll miss documents that say `"influenza fever treatment"` because the words are different. That never made sense to me — they're clearly talking about the same thing.
 
-Keyword-based search fails when people phrase things differently.
-I solved this by converting every document and query into a **vector embedding**using a pre-trained transformer model (`BAAI/bge-base-en-v1.5`). Similar sentences produce similar vectors, so searching by meaning becomes a simple math operation — find the closest vector.
+So I built a system that converts everything (documents and queries) into vectors that capture meaning, then finds the closest matches. On top of that, I added a cache that remembers past searches, so if someone asks something similar later, it returns results instantly without recomputing anything.
 
-**Problem 2 — How do I search thousands of vectors quickly?**
-
-Comparing a query against every document one by one is too slow.
-I used **FAISS** (Facebook AI Similarity Search), which is a library built specifically for fast nearest-neighbour search on vectors. It can find the top-5 similar documents from 10,000+ in milliseconds.
-
-**Problem 3 — How do I avoid recomputing the same expensive search twice?**
-
-If 100 users ask about "machine learning basics", running FAISS 100 times wastes resources.
-I built a **semantic cache** that stores past query results. When a new query is similar enough to a past one (cosine similarity > 0.85), it returns the cached result instantly — no FAISS needed.
-
-But searching the entire cache for every query is also slow. So I used **Fuzzy C-Means clustering** to group similar documents into clusters, and the cache only searches within the relevant cluster. This made the lookup much faster.
+The whole thing runs as a FastAPI service, and I documented every design decision because I wanted to understand *why* each piece was there, not just make it work.
 
 ---
 
-## System Architecture
+## How I approached the three main problems
+
+### Problem 1: Making search understand meaning
+
+Keyword matching just wasn't going to cut it. I needed something that could tell that "flu symptoms" and "influenza fever" mean basically the same thing.
+
+I used a transformer model called `BAAI/bge-base-en-v1.5` to convert every document into a 768-dimensional vector. Same for queries when they come in. The cool thing is that semantically similar sentences end up with vectors that are close together in this 768-dimensional space. So searching becomes a math problem — find the nearest vectors.
+
+**Why this model specifically?** I tested a few smaller ones like MiniLM because they load faster, but the retrieval quality was noticeably worse. For a search system, I decided retrieval quality matters more than startup time. BGE-base was the sweet spot.
+
+### Problem 2: Searching through thousands of vectors quickly
+
+Once everything's a vector, I still need to find the closest matches to a query. Doing this brute force (comparing against every document) works, but gets slow as the collection grows.
+
+I used **FAISS** (Facebook AI Similarity Search), which is basically the standard for this. It's built to do nearest neighbor search on vectors really fast. For my dataset size (~18k documents), I used `IndexFlatIP`, which does exact cosine similarity search. It's fast enough and gives exact results — no approximation needed.
+
+### Problem 3: Stopping redundant computation
+
+This was the interesting part. If 50 people ask variations of "machine learning basics", running FAISS 50 times is wasteful. So I built a semantic cache.
+
+The cache stores past queries and their results. When a new query comes in, it checks if something semantically similar was asked before. If the cosine similarity is above my threshold (0.85, more on this later), it returns the cached result instantly.
+
+But here's the catch — checking every new query against *every* past cached query would also get slow. That's where clustering came in.
+
+---
+
+## Why fuzzy clustering (this took me a while to figure out)
+
+I initially thought I'd just use K-Means to group documents into topics. But then I looked at the 20 Newsgroups dataset and realized — documents don't always belong to one clean category.
+
+Take a post about "gun control legislation." Is it about politics? Firearms? Law? It's actually all three, just to different degrees.
+
+**Hard clustering (K-Means)** would force it into one bucket. That's wrong.
+
+**Fuzzy C-Means** gives each document a probability distribution across clusters:
 
 ```
-User Query
-    │
-    ▼
-Embedding Model (BAAI/bge-base-en-v1.5)
-    │
-    ▼
-Query Vector (768 dimensions)
-    │
-    ▼
-Fuzzy Cluster Assignment
-    │
-    ▼
-Semantic Cache Lookup (search only this cluster)
-    │
-    ├── Similarity > 0.85 ──► Return cached result instantly
-    │                         (cache HIT)
-    │
-    └── Below threshold ────► FAISS Vector Search
-                               │
-                               ▼
-                          Top-K Results
-                               │
-                               ▼
-                          Store in Cache
-                               │
-                               ▼
-                          Return Results
+Politics cluster: 0.48
+Firearms cluster: 0.43
+Law cluster: 0.09
 ```
 
----
+This matches reality better. A document *can* belong to multiple topics.
 
-## Why I chose each component
-
-| Component | What I used | Why I chose it |
-|-----------|-------------|----------------|
-| Embedding model | `BAAI/bge-base-en-v1.5` | One of the best models for semantic retrieval tasks. Produces 768-dim vectors that capture sentence meaning very well. |
-| Vector database | `FAISS IndexFlatIP` | Exact cosine similarity search. Fast enough for this dataset size and gives 100% accurate results (no approximation). |
-| Clustering | Fuzzy C-Means | Unlike K-Means, which forces one hard label per document, Fuzzy C-Means gives each document a *probability distribution* over clusters. A document about gun laws can belong 52% to politics and 43% to firearms, which is more realistic. |
-| Dimensionality reduction | UMAP (20D for clustering, 2D for visualization) | UMAP preserves the local and global structure of high-dimensional data better than PCA. This gave much cleaner cluster boundaries. |
-| Cache structure | Python dict + cosine similarity | No external caching library needed. I implemented it from scratch using cluster buckets, so lookup stays fast as the cache grows. |
-| API | FastAPI | Simple to write, automatically generates interactive documentation at `/docs`. |
+I used this for the cache — when a query comes in, I find its dominant cluster, and only check cached queries from that cluster. This keeps cache lookup fast even as it grows.
 
 ---
 
-## Why Fuzzy Clustering specifically
+## The experiments that actually guided my decisions
 
-The assignment required soft/fuzzy clustering, and honestly it made a lot of sense once I understood why.
+I didn't want to just pick parameters arbitrarily. So I ran experiments to see what actually worked.
 
-The 20 Newsgroups dataset has real semantic overlap — an article about *"gun control legislation"* genuinely belongs to both *politics* and *firearms* topics. Hard clustering (K-Means) would force it into one category and lose that nuance.
+### Clustering visualization
 
-With Fuzzy C-Means, that same document gets something like:
+![Cluster Visualization](experiments/cluster_visualization.png)
 
+I projected the 768-dimensional vectors down to 2D using UMAP (which preserved structure way better than PCA when I tested both).
+
+Looking at this plot told me a few things:
+- Documents naturally grouped into topic regions without me forcing it — technology documents clustered together, medical ones together, etc.
+- The green dots are documents that strongly belong to one cluster (membership > 0.8)
+- The red/yellow dots are boundary documents — they sit between clusters. For example, articles about satellite hardware appear between space and technology clusters, which makes perfect sense.
+
+This confirmed that fuzzy clustering was capturing the real semantic structure, not creating artificial boundaries.
+
+### Threshold experiment
+
+The cache threshold was critical — how similar is "similar enough" to return a cached result?
+
+I tested different thresholds:
+
+| Threshold | Hit Rate | What happened |
+|-----------|----------|---------------|
+| 0.70 | ~80% | Way too aggressive. Started returning irrelevant results. |
+| 0.75 | ~70% | Still not safe. |
+| 0.80 | ~55% | Getting better. |
+| **0.85** | **~45%** | Best balance — good hit rate, matches genuinely similar. |
+| 0.90 | ~20% | Too strict, cache barely activates. |
+| 0.95 | ~8% | Pointless. Might as well not have a cache. |
+
+I picked 0.85. Below that, I was getting bad matches. Above that, the cache wasn't useful enough. At 0.85, about 45% of queries hit the cache, and when I manually checked the matches, they were actually semantically similar.
+
+---
+
+## What it looks like running
+
+Here's a real example from testing:
+
+**First query:**
 ```
-Politics  cluster: 0.48
-Firearms  cluster: 0.43
-Law       cluster: 0.09
+Query   : "symptoms of flu and fever"
+Status  : MISS (first time seeing this)
+Cluster : 3
+Latency : 43.2 ms
 ```
 
-This distribution is used in the cache — the query gets assigned to its dominant cluster, which is where the cache search happens. So the clustering directly improves cache performance. That integration between Part 2 and Part 3 was one of the things I was most careful about designing.
+**Second query, from a different user maybe:**
+```
+Query   : "influenza fever treatment"
+Status  : HIT (recognized as similar to previous)
+Matched : "symptoms of flu and fever."
+Score   : 0.912
+Latency : 1.4 ms
+```
+
+That's a 30x speedup from the cache. 43ms to 1.4ms.
 
 ---
 
-## The tunable parameter — Similarity Threshold
+## The cache stats endpoint shows real usage:
 
-The most important design decision in the cache is the **similarity threshold**: how similar does a new query need to be to a cached query before we return the cached result?
+```json
+{
+  "total_entries": 42,
+  "total_lookups": 67,
+  "total_hits": 25,
+  "hit_rate": 0.373,
+  "threshold": 0.85,
+  "clusters_active": [2, 3, 5, 7, 9, 11]
+}
+```
 
-I ran experiments across 6 threshold values:
-
-| Threshold | Cache Hit Rate | Behaviour |
-|-----------|---------------|-----------|
-| 0.70 | ~80% | Too aggressive — returns wrong answers |
-| 0.75 | ~70% | Still risky |
-| 0.80 | ~55% | Reasonable balance |
-| **0.85** | **~45%** | **Best balance — chosen** |
-| 0.90 | ~20% | Conservative, rarely hits |
-| 0.95 | ~8% | Almost never hits |
-
-I chose **0.85** because it gives a good hit rate while making sure the cached answer is actually relevant to the new query.
+37% of queries served instantly from cache. In production with repeated user queries, that number would climb higher.
 
 ---
 
-## Project Structure
+## Project structure (how I organized everything)
 
 ```
 semantic-search-system/
 │
 ├── notebooks/
-│   ├── 01_data_preprocessing.ipynb     # Load + clean 20 Newsgroups dataset
-│   ├── 02_embeddings_faiss.ipynb       # Generate embeddings + build FAISS index
-│   ├── 03_fuzzy_clustering.ipynb       # UMAP reduction + Fuzzy C-Means clustering
-│   ├── 04_semantic_cache.ipynb         # SemanticCache class + unit tests
-│   ├── 05_retrieval_pipeline.ipynb     # End-to-end pipeline test
-│   ├── 06_threshold_experiments.ipynb  # Threshold analysis + plots
-│   └── 07_api_service.ipynb            # API demo + testing
+│   ├── 01_data_preprocessing.ipynb     # Load and clean the data
+│   ├── 02_embeddings_faiss.ipynb       # Generate vectors, build FAISS index
+│   ├── 03_fuzzy_clustering.ipynb       # UMAP + Fuzzy C-Means
+│   ├── 04_semantic_cache.ipynb         # Build the cache with tests
+│   ├── 05_retrieval_pipeline.ipynb     # Test everything together
+│   ├── 06_threshold_experiments.ipynb  # The threshold experiment
+│   └── 07_api_service.ipynb            # Wrap it in FastAPI
 │
 ├── src/
-│   ├── __init__.py
 │   └── api/
-│       ├── __init__.py
-│       └── main.py                     # FastAPI server
+│       └── main.py                     # The actual FastAPI server
 │
 ├── experiments/
-│   ├── cluster_visualization.png       # Fuzzy cluster plot (UMAP 2D)
-│   └── threshold_analysis.png          # Hit rate vs threshold graph
-│
-├── models/                             # Auto-generated by notebooks
-│   ├── embeddings.npy
-│   ├── faiss.index
-│   ├── cluster_model.pkl
-│   └── membership_matrix.npy
-│
-├── data/
-│   └── processed/
-│       └── clean_corpus.pkl
+│   ├── cluster_visualization.png
+│   └── threshold_analysis.png
 │
 ├── requirements.txt
 ├── Dockerfile
 └── README.md
 ```
 
+The notebooks save their outputs to `models/` (which isn't in git) so each step can pick up where the last left off.
+
 ---
 
-## How to run this project
+## Running it yourself
 
-### Option A — Google Colab (recommended)
+### On Google Colab (this is what I used)
 
-**Step 1** — Open each notebook in Colab in order
-
-**Step 2** — Mount your Google Drive when prompted
-
-**Step 3** — Run notebooks in this exact order:
-
+Just run the notebooks in order:
 ```
 01 → 02 → 03 → 04 → 05 → 06 → 07
 ```
+Each one saves to your Google Drive, so the next notebook loads the data automatically.
 
-Each notebook saves its output to Google Drive so the next one can load it.
-
-**Step 4** — After all notebooks are done, start the API:
+After notebook 07, start the API:
 ```bash
 uvicorn src.api.main:app --reload --port 8000
 ```
 
-### Option B — Local machine
+### Locally
 
 ```bash
-# Clone the repo
 git clone https://github.com/YOUR_USERNAME/semantic-search-system.git
 cd semantic-search-system
 
-# Create virtual environment
 python -m venv .venv
-.venv\Scripts\activate        # Windows
-source .venv/bin/activate     # Mac/Linux
+# Windows:
+.venv\Scripts\activate
+# Mac/Linux:
+source .venv/bin/activate
 
-# Install dependencies
 pip install -r requirements.txt
 
-# Run notebooks 01 through 07 in order, then start the API
+# Run notebooks 01-07, then:
 uvicorn src.api.main:app --reload --port 8000
 ```
 
-Open `http://localhost:8000/docs` in your browser for the interactive API.
+Open `http://localhost:8000/docs` — FastAPI generates an interactive Swagger UI where you can test everything.
 
 ---
 
-## API Endpoints
+## API endpoints
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/query` | Search for documents by meaning |
-| `GET` | `/cache/stats` | View cache hit rate and statistics |
-| `DELETE` | `/cache` | Clear the cache |
-| `GET` | `/health` | Check if server is running |
+| Method | Endpoint | What it does |
+|--------|----------|--------------|
+| `POST` | `/query` | Send a search query, get back relevant docs |
+| `GET` | `/cache/stats` | See cache performance |
+| `DELETE` | `/cache` | Clear the cache (for testing) |
+| `GET` | `/health` | Check if the service is running |
 
-### Example request
-
+**Example request:**
 ```json
 POST /query
 {
@@ -221,8 +230,7 @@ POST /query
 }
 ```
 
-### Example response — cache MISS (first time)
-
+**Response (cache miss):**
 ```json
 {
   "query": "symptoms of flu and fever",
@@ -242,8 +250,7 @@ POST /query
 }
 ```
 
-### Example response — cache HIT (similar query asked later)
-
+**Response (cache hit):**
 ```json
 {
   "query": "influenza fever treatment",
@@ -256,43 +263,21 @@ POST /query
 }
 ```
 
-Notice the latency drops from **43ms → 1.4ms** on a cache hit. That is the entire point of the semantic cache.
-
 ---
 
-## Dataset
+## What I learned
 
-**20 Newsgroups** — a classic NLP benchmark dataset containing ~18,000 newsgroup posts across 20 topics including medicine, space, computing, politics, religion and sports.
+This project taught me more than just how to use certain libraries.
 
-Loaded directly via `sklearn.datasets.fetch_20newsgroups` — no manual download needed.
+**About embeddings:** I finally understood why people say transformers capture meaning better than TF-IDF. It's not magic — similar concepts actually cluster together in vector space in ways that make intuitive sense.
 
----
+**About FAISS:** I learned that you don't always need approximate search. For moderate dataset sizes, exact search is fast enough, and you get guaranteed correct results.
 
-## Requirements
+**About clustering:** Fuzzy clustering isn't just a fancy alternative to K-Means — for real-world data where categories overlap, it's actually the right tool.
 
-```
-sentence-transformers==2.7.0
-faiss-cpu==1.8.0
-scikit-learn==1.4.2
-scikit-fuzzy==0.4.2
-fastapi==0.111.0
-uvicorn[standard]==0.30.1
-numpy==1.26.4
-pandas==2.2.2
-umap-learn==0.5.6
-matplotlib==3.8.4
-pydantic==2.7.1
-```
+**About caching:** Semantic caching is completely different from key-value caching. You're not looking for exact matches, you're looking for "close enough." The threshold matters, and you need to experiment to find it.
 
----
-
-## What I learned from this project
-
-- How transformer embeddings work and why they are better than TF-IDF for semantic tasks
-- How FAISS indexes vectors for fast similarity search
-- Why fuzzy clustering is more appropriate than hard clustering for text data with overlapping topics
-- How caching at the semantic level (meaning similarity) is fundamentally different from key-value caching
-- How all these components can be wired together into a real API service
+**About designing systems:** The biggest takeaway was learning to make decisions based on experiments, not intuition. I could have picked 0.9 as the threshold because it "sounds safe," but the experiment showed that would make the cache almost useless. Running the numbers changed my mind.
 
 ---
 
