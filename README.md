@@ -85,6 +85,8 @@ This confirmed that fuzzy clustering was capturing the real semantic structure, 
 
 ### Threshold experiment
 
+![Threshold experiment](experiments/threshold_analysis.png)
+
 The cache threshold was critical — how similar is "similar enough" to return a cached result?
 
 I tested different thresholds:
