@@ -1,10 +1,6 @@
 # Semantic Search System
 ### An end-to-end semantic search engine with fuzzy clustering and intelligent caching
 
-> Built as part of my internship project — this system lets you search through a large document collection using the *meaning* of your query, not just exact keywords.
-
----
-
 ## What this project does
 
 When you search for *"flu symptoms"*, a normal search engine looks for those exact words.
@@ -21,7 +17,7 @@ When I started this project, I had three main problems to solve:
 **Problem 1 — How do I make search understand meaning, not just words?**
 
 Keyword-based search fails when people phrase things differently.
-I solved this by converting every document and query into a **vector embedding** using a pre-trained transformer model (`BAAI/bge-base-en-v1.5`). Similar sentences produce similar vectors, so searching by meaning becomes a simple math operation — find the closest vector.
+I solved this by converting every document and query into a **vector embedding**using a pre-trained transformer model (`BAAI/bge-base-en-v1.5`). Similar sentences produce similar vectors, so searching by meaning becomes a simple math operation — find the closest vector.
 
 **Problem 2 — How do I search thousands of vectors quickly?**
 
@@ -33,7 +29,7 @@ I used **FAISS** (Facebook AI Similarity Search), which is a library built speci
 If 100 users ask about "machine learning basics", running FAISS 100 times wastes resources.
 I built a **semantic cache** that stores past query results. When a new query is similar enough to a past one (cosine similarity > 0.85), it returns the cached result instantly — no FAISS needed.
 
-But searching the entire cache for every query is also slow. So I used **Fuzzy C-Means clustering** to group similar documents into clusters, and the cache only searches within the relevant cluster. This made lookup much faster.
+But searching the entire cache for every query is also slow. So I used **Fuzzy C-Means clustering** to group similar documents into clusters, and the cache only searches within the relevant cluster. This made the lookup much faster.
 
 ---
 
@@ -77,16 +73,16 @@ Semantic Cache Lookup (search only this cluster)
 |-----------|-------------|----------------|
 | Embedding model | `BAAI/bge-base-en-v1.5` | One of the best models for semantic retrieval tasks. Produces 768-dim vectors that capture sentence meaning very well. |
 | Vector database | `FAISS IndexFlatIP` | Exact cosine similarity search. Fast enough for this dataset size and gives 100% accurate results (no approximation). |
-| Clustering | Fuzzy C-Means | Unlike K-Means which forces one hard label per document, Fuzzy C-Means gives each document a *probability distribution* over clusters. A document about gun laws can belong 52% to politics and 43% to firearms — which is more realistic. |
+| Clustering | Fuzzy C-Means | Unlike K-Means, which forces one hard label per document, Fuzzy C-Means gives each document a *probability distribution* over clusters. A document about gun laws can belong 52% to politics and 43% to firearms, which is more realistic. |
 | Dimensionality reduction | UMAP (20D for clustering, 2D for visualization) | UMAP preserves the local and global structure of high-dimensional data better than PCA. This gave much cleaner cluster boundaries. |
-| Cache structure | Python dict + cosine similarity | No external caching library needed. I implemented it from scratch using cluster buckets so lookup stays fast as the cache grows. |
+| Cache structure | Python dict + cosine similarity | No external caching library needed. I implemented it from scratch using cluster buckets, so lookup stays fast as the cache grows. |
 | API | FastAPI | Simple to write, automatically generates interactive documentation at `/docs`. |
 
 ---
 
 ## Why Fuzzy Clustering specifically
 
-The assignment required soft/fuzzy clustering and honestly it made a lot of sense once I understood why.
+The assignment required soft/fuzzy clustering, and honestly it made a lot of sense once I understood why.
 
 The 20 Newsgroups dataset has real semantic overlap — an article about *"gun control legislation"* genuinely belongs to both *politics* and *firearms* topics. Hard clustering (K-Means) would force it into one category and lose that nuance.
 
