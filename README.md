@@ -2,27 +2,57 @@
 
 ### An end-to-end semantic search engine with fuzzy clustering and intelligent caching
 
-> This project reflects my understanding of semantic search — building a search engine that actually understands what you're asking, not just matching keywords.
+> This project reflects my understanding of semantic search — building a search engine that actually understands what you're asking, not just matching keywords. The whole thing runs as a FastAPI service, and I documented everything I learned along the way.
+
 
 ---
 
-## What I built
+## Wait, what does this actually do?
 
-Here's the problem I started with: 
+Normal search looks for exact words. If you search for `"flu symptoms"`, it'll miss documents that say `"influenza fever treatment"` because the words are different. That always bothered me — they're clearly talking about the same thing!
 
-Normal search looks for exact words. If you search for "flu symptoms"`, it'll miss documents that say `"influenza fever treatment"` because the words are different. That never made sense to me — they're clearly talking about the same thing.
-
-So I built a system that converts everything (documents and queries) into vectors that capture meaning, then finds the closest matches. On top of that, I added a cache that remembers past searches, so if someone asks something similar later, it returns results instantly without recomputing anything.
-
-The whole thing runs as a FastAPI service, and I documented every design decision because I wanted to understand *why* each piece was there, not just make it work.
+So I built a system that converts everything (documents and queries) into vectors that capture meaning, then finds the closest matches. On top of that, I added a cache that remembers past searches — if someone asks something similar later, it returns results instantly without recomputing anything.
 
 ---
 
-## How I approached the three main problems
+## How data actually flows through the system
+
+I spent a lot of time sketching this out on paper before writing any code. Here's what I ended up with:
+
+```
+User Query
+    ↓
+Sentence Transformer (BAAI/bge-base-en-v1.5)
+    ↓
+Query Embedding (768-dimensional vector)
+    │
+    ├──► Semantic Cache Lookup
+    │        │
+    │        ├── HIT ──────────────────► Return cached results instantly
+    │        │                              (30x faster, ~1.4ms)
+    │        │
+    │        └── MISS
+    │              ↓
+    │         Cluster Assignment (Fuzzy C-Means)
+    │              ↓
+    │         FAISS Vector Search
+    │              ↓
+    │         Top-K Documents
+    │              ↓
+    │         Store in Cache
+    │              ↓
+    └────────► API Response
+```
+
+I drew this after I understood all the pieces. The query comes in, gets converted to a vector, checks the cache first (only in its relevant cluster), and only hits FAISS if it's genuinely new. This ordering — cache *before* FAISS — was intentional. Why recompute if you don't have to?
+
+---
+
+## Breaking down the three main problems
 
 ### Problem 1: Making search understand meaning
 
-Keyword matching just wasn't going to cut it. I needed something that could tell that "flu symptoms" and "influenza fever" mean basically the same thing.
+Keyword matching just wasn't going to work. I needed something that could tell that "flu symptoms" and "influenza fever" mean basically the same thing.
 
 I used a transformer model called `BAAI/bge-base-en-v1.5` to convert every document into a 768-dimensional vector. Same for queries when they come in. The cool thing is that semantically similar sentences end up with vectors that are close together in this 768-dimensional space. So searching becomes a math problem — find the nearest vectors.
 
@@ -62,7 +92,7 @@ Law cluster: 0.09
 
 This matches reality better. A document *can* belong to multiple topics.
 
-I used this for the cache — when a query comes in, I find its dominant cluster, and only check cached queries from that cluster. This keeps cache lookup fast even as it grows.
+I used this for the cache — when a query comes in, I find its dominant cluster, and only check cached queries from that cluster. This keeps cache lookup fast even as it grows. The connection between Part 2 (clustering) and Part 3 (cache) was something I thought about carefully — they're not separate pieces, they work together.
 
 ---
 
@@ -85,7 +115,7 @@ This confirmed that fuzzy clustering was capturing the real semantic structure, 
 
 ### Threshold experiment
 
-![Threshold experiment](experiments/threshold_analysis.png)
+![Threshold Analysis](experiments/threshold_analysis.png)
 
 The cache threshold was critical — how similar is "similar enough" to return a cached result?
 
@@ -173,44 +203,34 @@ semantic-search-system/
 └── README.md
 ```
 
-The notebooks save their outputs to `models/` (which isn't in git) so each step can pick up where the last left off.
+The notebooks save their outputs to `models/` (which isn't in git) so each step can pick up where the last left off. I structured it this way because I knew I'd be coming back to different parts as I figured things out.
 
 ---
 
-## Running it yourself
+## Quick Start (tested this myself to make sure it works)
 
-### On Google Colab (this is what I used)
-
-Just run the notebooks in order:
-```
-01 → 02 → 03 → 04 → 05 → 06 → 07
-```
-Each one saves to your Google Drive, so the next notebook loads the data automatically.
-
-After notebook 07, start the API:
-```bash
-uvicorn src.api.main:app --reload --port 8000
-```
-
-### Locally
+The assignment required that the service start cleanly with a single uvicorn command, so I made sure this actually works:
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/semantic-search-system.git
-cd semantic-search-system
+# Create virtual environment (this took me a while to understand why it's necessary)
+python -m venv venv
 
-python -m venv .venv
-# Windows:
-.venv\Scripts\activate
-# Mac/Linux:
-source .venv/bin/activate
+# Activate it — different commands for different OS
+# On Linux/Mac:
+source venv/bin/activate
+# On Windows:
+venv\Scripts\activate
 
+# Install dependencies
 pip install -r requirements.txt
 
-# Run notebooks 01-07, then:
-uvicorn src.api.main:app --reload --port 8000
+# Fire it up — single command, works every time
+uvicorn src.api.main:app --host 0.0.0.0 --port 8000
 ```
 
-Open `http://localhost:8000/docs` — FastAPI generates an interactive Swagger UI where you can test everything.
+The virtual environment was annoying at first, but now I get why it's important — keeps dependencies separate, so nothing breaks.
+
+After running this, open `http://localhost:8000/docs` — FastAPI generates an interactive Swagger UI where you can test everything. I spent way too long playing with this once it worked.
 
 ---
 
@@ -265,6 +285,8 @@ POST /query
 }
 ```
 
+I made sure the API returns latency so you can actually see the speed difference between cache hits and misses.
+
 ---
 
 ## What I learned
@@ -279,7 +301,15 @@ This project taught me more than just how to use certain libraries.
 
 **About caching:** Semantic caching is completely different from key-value caching. You're not looking for exact matches, you're looking for "close enough." The threshold matters, and you need to experiment to find it.
 
-**About designing systems:** The biggest takeaway was learning to make decisions based on experiments, not intuition. I could have picked 0.9 as the threshold because it "sounds safe," but the experiment showed that would make the cache almost useless. Running the numbers changed my mind.
+**About designing systems:** The biggest takeaway was learning to make decisions based on experiments, not intuition. I could have picked 0.9 as the threshold because it "sounds safe," but the experiment showed that would make the cache almost useless. Running the numbers changed my mind. Also, drawing the architecture diagram first helped me figure out how all the pieces would fit together before I started coding.
+
+---
+
+## Watch me explain the whole thing
+
+I recorded a video walking through the project — I show the architecture diagram, demonstrate the cache in action with real queries, and explain why I made certain tradeoffs. You can watch it here:
+
+🎥 **[Semantic Search System - Project Walkthrough](https://www.loom.com/share/6d692e6fcdfe4307b3842efb5ee0818d)**
 
 ---
 
