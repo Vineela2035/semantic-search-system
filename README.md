@@ -305,12 +305,4 @@ This project taught me more than just how to use certain libraries.
 
 ---
 
-## Watch me explain the whole thing
-
-I recorded a video walking through the project — I show the architecture diagram, demonstrate the cache in action with real queries, and explain why I made certain tradeoffs. You can watch it here:
-
-🎥 **[Semantic Search System - Project Walkthrough](https://www.loom.com/share/6d692e6fcdfe4307b3842efb5ee0818d)**
-
----
-
 *Built with Python 3.10 · Developed on Google Colab · Dataset: 20 Newsgroups*
